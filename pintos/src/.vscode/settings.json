@@ -1,0 +1,25 @@
+{
+    "files.associations": {
+        "initializer_list": "cpp",
+        "limits": "cpp",
+        "type_traits": "cpp",
+        "*.inc": "c",
+        "*.tcc": "c",
+        "exception": "c",
+        "functional": "c",
+        "algorithm": "c",
+        "random": "c",
+        "fstream": "c",
+        "istream": "c",
+        "memory": "c",
+        "new": "c",
+        "ostream": "c",
+        "numeric": "c",
+        "sstream": "c",
+        "streambuf": "c",
+        "string_view": "c",
+        "cmath": "c",
+        "typeinfo": "c",
+        "utility": "c"
+    }
+}
