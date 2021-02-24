@@ -49,6 +49,9 @@ static struct list all_list;
 /* Idle thread. */
 static struct thread *idle_thread;
 
+/* Thread to update load_avg, recent_cpu and priorities every second. */
+static struct thread *update_thread;
+
 /* Wakeup thread */
 static struct thread *wakeup_thread;
 
@@ -94,6 +97,7 @@ static void kernel_thread (thread_func *, void *aux);
 
 static void idle (void *aux UNUSED);
 static void wakeup(void * nullptr);
+static void update (void * nullptr);
 static struct thread *running_thread (void);
 static struct thread *next_thread_to_run (void);
 static void init_thread (struct thread *, const char *name, int priority);
@@ -156,6 +160,9 @@ thread_start (void)
   /* Create the wakeup thread */
   thread_create ("wakeup", PRI_MAX, wakeup, NULL);
 
+  /* Create the update thread */
+  thread_create ("update", PRI_MAX, update, NULL);
+
   /* Start preemptive thread scheduling. */
   intr_enable ();
 
@@ -193,13 +200,13 @@ thread_tick (int64_t ticks)
     (t->recent_cpu)+=FP_F;
   }
 
-  /* Update load_avg and recent_cpu values every second. */
+  /* Wake the update thread up every second. */
   if (ticks%TIMER_FREQ==0) {
-    thread_update_load_avg();
-    thread_foreach(thread_update_recent_cpu, NULL);
-    thread_foreach(thread_update_priority, NULL);
-    if(thread_mlfqs)
-      mlfqs_update_highest();
+    if(update_thread->status == THREAD_BLOCKED) {
+      thread_update_load_avg();
+      thread_unblock(update_thread);
+      intr_yield_on_return();
+    }
   }
 
   /* Update thread priority value every fourth tick. */
@@ -207,7 +214,7 @@ thread_tick (int64_t ticks)
     thread_update_priority(t, NULL);
   }
 
-  if(t!=wakeup_thread) {
+  if(t!=wakeup_thread && t!=update_thread) {
     /* Pre-empt the running thread if it is no longer the highest priority. */
     check_preempt(true);
     /* Enforce preemption on expiry of time slice. */
@@ -416,7 +423,7 @@ void
 check_preempt(bool ext_interrupt)
 {
   struct thread* t = thread_current();
-  if(t==wakeup_thread)
+  if(t==wakeup_thread || t==update_thread)
     return;
 
   if(thread_mlfqs) {
@@ -521,13 +528,38 @@ thread_foreach (thread_action_func *func, void *aux)
     }
 }
 
+/* Function executed by the update thread to update recent_cpu and 
+   priority values for all threads, and then block itself. */
+void update (void * nullptr UNUSED) {
+  update_thread = thread_current();
+  while (1)
+  {
+    struct list_elem *e;
+    for (e = list_begin (&all_list); e != list_end (&all_list);
+         e = list_next (e))
+    {
+      struct thread *t = list_entry (e, struct thread, allelem);
+      thread_update_recent_cpu(t, NULL);
+      thread_update_priority(t, NULL);
+    }
+    if(thread_mlfqs)
+      mlfqs_update_highest();
+    enum intr_level old_level = intr_disable();
+    update_thread->status = THREAD_BLOCKED;
+    schedule();
+    intr_set_level(old_level);
+  }
+}
+
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
 thread_set_priority (int new_priority) 
 {
+  enum intr_level old_level = intr_disable();
   if(!thread_mlfqs) {
     struct thread* t = thread_current();
     t->priority = new_priority;
+    intr_set_level(old_level);
     //yield if a higher priority thread is in the ready queue.
     check_preempt(false);
   }
@@ -551,7 +583,7 @@ thread_update_priority (struct thread* t, void* initial_nice)
       t->priority = new_priority;
       rearrange(t);
     }
-  } else if(t!=idle_thread && t!=wakeup_thread && t!=initial_thread) {
+  } else if(t!=idle_thread && t!=wakeup_thread && t!=update_thread && t!=initial_thread) {
     int64_t new_priority_fp = ((int64_t)PRI_MAX)*FP_F - (t->recent_cpu/4) - (((int64_t)2)*t->nice*FP_F);
     int new_priority = roundoff_priority(get_rounded_integer(new_priority_fp));
     if(t->priority!=new_priority) {
@@ -588,6 +620,7 @@ rearrange(struct thread* t) {
 void
 thread_set_nice (int nice) 
 {
+  enum intr_level old_level = intr_disable();
   struct thread* t = thread_current();
   //adjust nice value to lie in range
   if(nice>20) {
@@ -598,6 +631,7 @@ thread_set_nice (int nice)
     t->nice = nice;
   }
   thread_update_priority(t, t==initial_thread?t:NULL);
+  intr_set_level(old_level);
   check_preempt(false);
 }
 
@@ -615,7 +649,7 @@ thread_get_load_avg (void)
   return get_rounded_integer(100*load_avg);
 }
 
-/* Calculates and updates load_avg */
+/* Calculates and updates load_avg. */
 void
 thread_update_load_avg (void) 
 {
@@ -680,6 +714,7 @@ wakeup_lower(const struct list_elem* a, const struct list_elem* b, void* aux UNU
     return false;
 }
 
+/* Update the highest active queue in mlfqs */
 void
 mlfqs_update_highest(void) {
   ASSERT(thread_mlfqs);
@@ -690,6 +725,7 @@ mlfqs_update_highest(void) {
   mlfqs_highest = i;
 }
 
+/* Insert a thread into the ready queue. */
 void
 ready_insert(struct thread* t) {
   if(thread_mlfqs) {
